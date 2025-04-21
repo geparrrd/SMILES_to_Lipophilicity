@@ -1,37 +1,23 @@
 import pandas as pd
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import Descriptors, MolFromSmiles, rdFingerprintGenerator as fp
-from sklearn.preprocessing import FunctionTransformer, MinMaxScaler
-from sklearn.pipeline import Pipeline, FeatureUnion
-from sklearn.compose import ColumnTransformer
+from rdkit.Chem import Descriptors, MolFromSmiles, MACCSkeys, LayeredFingerprint
+from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator, GetAtomPairGenerator, GetTopologicalTorsionGenerator
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-import deepchem as dc
+from deepchem.feat import DMPNNFeaturizer
 import torch
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-
+from torch_geometric.data import Data
+from deepchem.models.torch_models.dmpnn import _MapperDMPNN
+import warnings
+warnings.filterwarnings("ignore")
 
 RANDOM_STATE = 616
-BATCH_SIZE = 16
 
 
-class CombinedDataset(Dataset):
-    def __init__(self, graph_dataset, numeric_dataset):
-        assert len(graph_dataset) == len(numeric_dataset), "Длины датасетов должны совпадать"
-        self.graph_dataset = graph_dataset
-        self.numeric_dataset = numeric_dataset
+def smiles_to_descriptors(smiles):
+    '''To get descriptors'''
 
-    def __len__(self):
-        return len(self.graph_dataset)
-
-    def __getitem__(self, idx):
-        graph_data = self.graph_dataset[idx]
-        numeric_data = self.numeric_dataset[idx]
-
-        return graph_data, numeric_data
-
-
-def smiles_to_descriptors_v4(smiles):
     mol = Chem.MolFromSmiles(smiles)
     return {"BalabanJ": Descriptors.BalabanJ(mol),
             "qed": Descriptors.qed(mol),
@@ -76,29 +62,56 @@ def smiles_to_descriptors_v4(smiles):
 
 
 def calc_fingerprints(sm):
-    """Генерация молекулярных отпечатков по методу Моргана"""
+    """Get fingerprints"""
 
-    morgan_fpgenerator = fp.GetMorganGenerator(radius=3, fpSize=2048)
-    return morgan_fpgenerator.GetFingerprintAsNumPy(MolFromSmiles(sm))
+    mol = MolFromSmiles(sm)
+
+    fp_size = 2048
+    morgan_fpgenerator = GetMorganGenerator(radius=3, fpSize=2 * fp_size)
+    morgan_np = morgan_fpgenerator.GetCountFingerprintAsNumPy(mol)
+
+    maccs = MACCSkeys.GenMACCSKeys(mol)
+    maccs_np = np.array(maccs)
+
+    # Atom Pair
+    ap_gen = GetAtomPairGenerator(fpSize=fp_size)
+    atom_pair_np = ap_gen.GetCountFingerprintAsNumPy(mol)
+
+    # Layered
+    # layered = LayeredFingerprint(mol, fpSize=2 * fp_size)
+    # layered_np = np.array(layered)
+
+    # Topological Torsion
+    # topo_gen = GetTopologicalTorsionGenerator(fpSize=2 * fp_size)
+    # torsion_np = topo_gen.GetCountFingerprintAsNumPy(mol)
+
+    combined_fp = np.concatenate([
+        morgan_np, maccs_np, atom_pair_np
+    ])
+
+    return combined_fp
 
 
 def smiles2graph(sm):
-    featurizer = dc.feat.DMPNNFeaturizer()
+    '''Get graph features'''
+
+    featurizer = DMPNNFeaturizer()
     graph = featurizer.featurize(sm)
     return graph
 
 
 def get_features(df):
-    df_desc = df['Smiles_cleaned'].apply(smiles_to_descriptors_v4).apply(pd.Series)
-    df_fp = df['Smiles_cleaned'].apply(calc_fingerprints).apply(pd.Series)
+    '''Get all features'''
 
-    df_featurized = pd.concat([df[['Smiles_cleaned']], df_desc, df_fp], axis=1)
-    df_graph = df['Smiles_cleaned'].apply(smiles2graph).apply(pd.Series)
+    feature = 'Smiles_cleaned'
+    df_desc = df[feature].apply(smiles_to_descriptors).apply(pd.Series)
+    df_fp = df[feature].apply(calc_fingerprints).apply(pd.Series)
+    df_graph = df[feature].apply(smiles2graph).apply(pd.Series)
 
     return df_desc, df_fp, df_graph
 
 
-def to_scale(*data):
+def scale_desc(*data):
     '''Data must be (train, valid, test)'''
 
     cols2log = ['MW', 'SPS', 'NumRotatableBonds', 'NHOHCount', 'TPSA']
@@ -115,8 +128,51 @@ def to_scale(*data):
     return data
 
 
+def scale_fp(*data):
+    '''Data must be (train, valid, test)'''
+
+    scaler = MinMaxScaler()
+    scaler.fit(data[0])
+    data = list(map(scaler.transform, data))
+
+    return data
+
+
+def fix_dim_data_features(data_feature, max_size=6):
+    '''bring the dimensions to a single format'''
+
+    if data_feature.shape[1] < max_size:
+        return np.pad(data_feature, ((0, 0), (0, max_size - data_feature.shape[1])), constant_values=-1)
+    elif data_feature.shape[1] > max_size:
+        raise ValueError(f'Размер слишком большой: {data_feature.shape[1]} > {max_size}')
+    return data_feature
+
+
+def mapper_graph(graph):
+    '''Custom mapper for DMPNN model'''
+
+    mapper = _MapperDMPNN(graph)
+    atom_features, f_ini_atoms_bonds, atom_to_incoming_bonds, mapping, global_features = mapper.values
+    atom_features = torch.from_numpy(atom_features).float()
+    f_ini_atoms_bonds = torch.from_numpy(f_ini_atoms_bonds).float()
+    try:
+        atom_to_incoming_bonds = torch.from_numpy(fix_dim_data_features(atom_to_incoming_bonds))
+        mapping = torch.from_numpy(fix_dim_data_features(mapping))
+    except Exception as e:
+        raise e
+
+    global_features = torch.from_numpy(global_features).float()
+    data = Data(atom_features=atom_features,
+                f_ini_atoms_bonds=f_ini_atoms_bonds,
+                atom_to_incoming_bonds=atom_to_incoming_bonds,
+                mapping=mapping, global_features=global_features)
+    return data
+
+
 def split_data(train_data, test_data, target='LogP'):
-    combined_df = {'train': None, 'val': None, 'test': None}
+    '''Split data to train-valid'''
+
+    combined_df = {'desc': None, 'fp': None, 'graph': None, 'y': None}
     y = train_data[target]
     X = train_data.drop(target, axis=1)
     X_test = test_data
@@ -126,32 +182,25 @@ def split_data(train_data, test_data, target='LogP'):
     X_train_desc, X_train_fp, X_train_graph = get_features(X_train)
     X_val_desc, X_val_fp, X_val_graph = get_features(X_val)
     X_test_desc, X_test_fp, X_test_graph = get_features(X_test)
-    X_train_desc, X_val_desc, X_test_desc = to_scale(X_train_desc, X_val_desc, X_test_desc)
-    
+    X_train_desc, X_val_desc, X_test_desc = scale_desc(X_train_desc, X_val_desc, X_test_desc)
+    X_train_fp, X_val_fp, X_test_fp = scale_fp(X_train_fp, X_val_fp, X_test_fp)
+
+    combined_df['desc'] = [X_train_desc, X_val_desc, X_test_desc]
+    combined_df['fp'] = [X_train_fp, X_val_fp, X_test_fp]
+    combined_df['graph'] = [X_train_graph, X_val_graph, X_test_graph]
+    combined_df['y'] = [y_train, y_val, y_test]
+
+    combined_df['desc'] = list(map(torch.Tensor, map(np.array, combined_df['desc'])))
+    combined_df['fp'] = list(map(torch.Tensor, map(np.array, combined_df['fp'])))
+    combined_df['graph'] = list(map(lambda x: list(map(lambda y: mapper_graph(y[0]), x.values)), combined_df['graph']))
+    combined_df['y'] = list(map(lambda x: torch.Tensor(x).unsqueeze(-1), map(np.array, combined_df['y'])))
+
+    return combined_df
 
 
 
-def get_loaders():
 
 
-    X_train_desc, X_val_desc, X_test_desc = map(torch.Tensor, [X_train_desc, X_val_desc, X_test_desc])
-    X_train_fp, X_val_fp, X_test_fp = map(torch.Tensor, map(np.array, [X_train_fp, X_val_fp, X_test_fp]))
-    X_train_graph, X_val_graph, X_test_graph = map(dc.data.NumpyDataset, [X_train_graph, X_val_graph, X_test_graph])
-    y_train, y_val, y_test = map(lambda x: torch.Tensor(x).unsqueeze(-1), map(np.array, [y_train, y_val, y_test]))
 
-    train_tensor_dataset = TensorDataset(X_train_desc, X_train_fp, y_train)
-    val_tensor_dataset = TensorDataset(X_val_desc, X_val_fp, y_val)
-    test_tensor_dataset = TensorDataset(X_test_desc, X_test_fp, y_test)
-
-    train_dataset = CombinedDataset(X_train_graph, train_tensor_dataset)
-    val_dataset = CombinedDataset(X_val_graph, val_tensor_dataset)
-    test_dataset = CombinedDataset(X_test_graph, test_tensor_dataset)
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(test_dataset)
-
-    return train_loader, val_loader, test_loader
 
 

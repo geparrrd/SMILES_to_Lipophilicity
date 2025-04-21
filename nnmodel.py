@@ -1,19 +1,8 @@
 import torch
-from torch.utils.data import Dataset, DataLoader, TensorDataset
 import torch.nn as nn
 import pytorch_lightning as pyl
-from sklearn.preprocessing import FunctionTransformer, StandardScaler, RobustScaler, MinMaxScaler
-from sklearn.metrics import r2_score, mean_squared_error, root_mean_squared_error as rmse
-from sklearn.model_selection import train_test_split
-from sklearn.base import BaseEstimator, RegressorMixin
-import deepchem as dc
-from deepchem.models.torch_models.dmpnn import DMPNNModel, DMPNN
-from deepchem.models.gbdt_models.gbdt_model import GBDTModel
-from deepchem.data.data_loader import CSVLoader
+from sklearn.metrics import r2_score
 
-
-BATCH_SIZE = 32
-EPOCHS = 40
 HIDDEN_SIZE = 256
 
 
@@ -28,56 +17,43 @@ class RMSELoss(nn.Module):
 
 
 class HybridDMPNN(pyl.LightningModule):
-    def __init__(self, fingerprint_size, numeric_features_size, ffn_hidden, dmpnn_model: DMPNN, hidden_size=HIDDEN_SIZE):
+    def __init__(self, fingerprint_size, numeric_features_size, dmpnn_model, num_hidden_size, comb_hidden_size,
+                 hidden_size=HIDDEN_SIZE, use_numeric=True, use_fingerprint=True, use_dmpnn=True):
         super(HybridDMPNN, self).__init__()
+        self.save_hyperparameters()
         self.test_predictions = []
         self.targets = []
+        self.use_numeric = use_numeric
+        self.use_fingerprint = use_fingerprint
+        self.use_dmpnn = use_dmpnn
+        self.hidden_size = hidden_size
+        self.num_hidden_size = num_hidden_size
 
         self.fingerprint_fc = nn.Sequential(
             nn.Linear(fingerprint_size, hidden_size),
-            # nn.LayerNorm(hidden_size),
             nn.LeakyReLU(),
-            # nn.Dropout(0.2),
-            # nn.LeakyReLU(),
             nn.Linear(hidden_size, hidden_size // 2),
-            # nn.LayerNorm(hidden_size // 2),
             nn.LeakyReLU()
         )
 
         self.numeric_fc = nn.Sequential(
-            nn.Linear(numeric_features_size, hidden_size),
-            # nn.LayerNorm(hidden_size),
+            nn.Linear(numeric_features_size, num_hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            # nn.LayerNorm(hidden_size),
+            nn.Linear(num_hidden_size, num_hidden_size // 2),
             nn.LeakyReLU()
         )
 
-        # self.dmpnn_enc = nn.Sequential(
-        #     dmpnn_model.encoder(),
-        #     nn.Linear(ffn_hidden, ffn_hidden),
-        #     nn.LeakyReLU(),
-        #     nn.Linear(ffn_hidden, ffn_hidden // 2),
-        #     nn.LeakyReLU()
-        # )
-
         self.dmpnn = dmpnn_model
 
-        # self.numeric_cont_fc = nn.Sequential(
-        #     nn.Linear(numeric_cont_features_size, hidden_size * 8),
-        #     # nn.LayerNorm(hidden_size * 4),
-        #     nn.LeakyReLU()
-        # )
+        ffn_hidden = dmpnn_model.n_tasks
+        self.ffn_hidden = ffn_hidden
 
-        # self.numeric_fc = nn.Sequential(
-        #     ResidualBlock(numeric_features_size, hidden_size)
-        # )
-
+        combined_in = num_hidden_size // 2 + hidden_size // 2 + ffn_hidden
         self.combined_fc = nn.Sequential(
-            nn.Linear(hidden_size * 3 // 2 + ffn_hidden, hidden_size),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(combined_in, comb_hidden_size),
+            nn.LayerNorm(comb_hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(comb_hidden_size, 1)
         )
 
         self.apply(self.initialize_weights)
@@ -89,43 +65,60 @@ class HybridDMPNN(pyl.LightningModule):
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
 
-    def forward(self, fingerprint, numeric_features):
-        fingerprint_out = self.fingerprint_fc(fingerprint)
-        numeric_out = self.numeric_fc(numeric_features)
-        dmpnn_out = self.dmpnn()
-        # numeric_cont_out = self.numeric_cont_fc(numeric_cont_features)
+    def forward(self, fingerprint, numeric_features, graphs):
+        parts = []
 
-        combined = torch.cat([fingerprint_out, numeric_out, dmpnn_out], dim=1)
+        if self.use_fingerprint:
+            fp_out = self.fingerprint_fc(fingerprint)
+        else:
+            fp_out = torch.zeros(fingerprint.shape[0], self.hidden_size // 2, device=fingerprint.device)
+        parts.append(fp_out)
+
+        if self.use_numeric:
+            num_out = self.numeric_fc(numeric_features)
+        else:
+            num_out = torch.zeros(numeric_features.shape[0], self.num_hidden_size // 2, device=numeric_features.device)
+        parts.append(num_out)
+
+        if self.use_dmpnn:
+            dmpnn_out = self.dmpnn(graphs)
+        else:
+            dmpnn_out = torch.zeros(graphs.num_graphs, self.ffn_hidden)
+        parts.append(dmpnn_out)
+
+        combined = torch.cat(parts, dim=1)
 
         return self.combined_fc(combined)
 
     def training_step(self, batch, batch_idx):
-        fingerprint, numeric_features, y = batch
-        y_pred = self(fingerprint, numeric_features)
+        graph_feature, fingerprint, numeric_features, y = batch
+        y_pred = self(fingerprint, numeric_features, graph_feature)
 
+        batch_size = y.size(0)
         loss = self.loss_fn(y_pred, y)
-        self.log('Train RMSE', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('Train RMSE', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
         r2 = r2_score(y.detach().cpu().numpy().reshape(-1), y_pred.detach().cpu().numpy().reshape(-1))
-        self.log('Train R²', r2, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('Train R²', r2, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        fingerprint, numeric_features, y = batch
-        y_pred = self(fingerprint, numeric_features)
+        graph_feature, fingerprint, numeric_features, y = batch
+        y_pred = self(fingerprint, numeric_features, graph_feature)
 
+        batch_size = y.size(0)
         loss = self.loss_fn(y_pred, y)
-        self.log('Validation RMSE', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('Validation RMSE', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
         r2 = r2_score(y.detach().cpu().numpy().reshape(-1), y_pred.detach().cpu().numpy().reshape(-1))
-        self.log('Validation R²', r2, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('Validation R²', r2, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
         return loss
 
     def test_step(self, batch, batch_idx):
-        fingerprint, numeric_features, y = batch
-        y_pred = self(fingerprint, numeric_features)
+        graph_feature, fingerprint, numeric_features, y = batch
+        y_pred = self(fingerprint, numeric_features, graph_feature)
 
         loss = self.loss_fn(y_pred, y)
         self.test_predictions.extend(y_pred.detach().cpu().numpy())
@@ -133,4 +126,6 @@ class HybridDMPNN(pyl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-3)
+        return torch.optim.Adam(self.parameters(), lr=1e-4)
+
+

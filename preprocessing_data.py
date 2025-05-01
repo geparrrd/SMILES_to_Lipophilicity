@@ -18,7 +18,7 @@ RANDOM_STATE = 616
 
 
 def smiles_to_descriptors(smiles):
-    '''To get descriptors'''
+    '''Get descriptors'''
 
     mol = Chem.MolFromSmiles(smiles)
     return {"BalabanJ": Descriptors.BalabanJ(mol),
@@ -103,6 +103,8 @@ def smiles2graph(sm):
 
 
 def scale_desc(df, is_test=False):
+    '''Custom scaler for descriptors'''
+
     cols2log = ['MW', 'SPS', 'NumRotatableBonds', 'NHOHCount', 'TPSA']
 
     for col in cols2log:
@@ -121,6 +123,8 @@ def scale_desc(df, is_test=False):
 
 
 def scale_fp(df, is_test=False):
+    '''Scaler for fingerprints'''
+
     if not is_test:
         scaler = MinMaxScaler()
         scaler.fit(df)
@@ -143,12 +147,12 @@ def get_features(df):
 
 
 def fix_dim_data_features(data_feature, max_size=6):
-    '''bring the dimensions to a single format'''
+    '''Bring the dimensions to a single format'''
 
     if data_feature.shape[1] < max_size:
         return np.pad(data_feature, ((0, 0), (0, max_size - data_feature.shape[1])), constant_values=-1)
     elif data_feature.shape[1] > max_size:
-        raise ValueError(f'Размер слишком большой: {data_feature.shape[1]} > {max_size}')
+        raise ValueError(f'Too big size: {data_feature.shape[1]} > {max_size}')
     return data_feature
 
 
@@ -174,6 +178,8 @@ def mapper_graph(graph):
 
 
 def split_dict_arrays(data_dict, test_size=0.2, random_state=RANDOM_STATE):
+    '''Split train dataset to train/valid'''
+
     n_samples = list(data_dict.values())[0].shape[0]
     indices = np.arange(n_samples)
 
@@ -182,8 +188,6 @@ def split_dict_arrays(data_dict, test_size=0.2, random_state=RANDOM_STATE):
     train_dict = {key: val.iloc[train_idx, :] for key, val in data_dict.items()}
     test_dict  = {key: val.iloc[test_idx, :]  for key, val in data_dict.items()}
 
-    # print(train_dict['desc'].shape)
-    # print(test_dict['desc'].shape)
     return train_dict, test_dict
 
 

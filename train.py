@@ -14,9 +14,11 @@ EPOCHS = 20
 
 
 def train():
+    '''Main function to train model'''
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    df_file = 'data/df_mean_logP.csv'
+    df_file = 'data/train_data.csv'
     data = pd.read_csv(df_file)
     comb_df = get_data(data)
     fingerprint_size = comb_df['train']['fp'].shape[1]
@@ -30,7 +32,7 @@ def train():
                         num_hidden_size=512,
                         comb_hidden_size=256).to(device)
 
-    logger = TensorBoardLogger("lightning_logs", name="model_test_3")
+    logger = TensorBoardLogger("lightning_logs", name="model_test")
     trainer = pyl.Trainer(max_epochs=EPOCHS, logger=logger)
     trainer.fit(model, train_loader, valid_loader)
 

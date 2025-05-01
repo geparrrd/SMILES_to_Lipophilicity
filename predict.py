@@ -8,6 +8,8 @@ from loaders.make_loaders import get_loaders
 
 
 def predict():
+    '''Function to predict'''
+
     df_file = 'data/test_data.csv'
     data = pd.read_csv(df_file)
     comb_df = get_data(data, is_test=True)

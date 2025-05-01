@@ -6,6 +6,17 @@ BATCH_SIZE = 128
 
 
 def get_loaders(comb_df, is_test=False, batch_size=BATCH_SIZE):
+    '''Get loaders from DataFrames
+
+    comb_df : dict
+        Dictionary with keys 'train', 'val', 'test'.
+        Each value - dictionary with keys:
+            - 'desc': torch.Tensor
+            - 'fp': torch.Tensor
+            - 'graph': list of mapper_graphs
+            - 'y': torch.Tensor target values or zeros if is_test=True
+    '''
+
     datasets = dict()
 
     for name in ['train', 'val', 'test']:

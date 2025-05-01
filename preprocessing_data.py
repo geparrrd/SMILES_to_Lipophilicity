@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import Descriptors, MolFromSmiles, MACCSkeys, LayeredFingerprint
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator, GetAtomPairGenerator, GetTopologicalTorsionGenerator
 from sklearn.preprocessing import MinMaxScaler
@@ -9,8 +9,10 @@ from deepchem.feat import DMPNNFeaturizer
 import torch
 from torch_geometric.data import Data
 from deepchem.models.torch_models.dmpnn import _MapperDMPNN
+import joblib
 import warnings
 warnings.filterwarnings("ignore")
+RDLogger.DisableLog('rdApp.*')
 
 RANDOM_STATE = 616
 
@@ -68,14 +70,14 @@ def calc_fingerprints(sm):
 
     fp_size = 2048
     morgan_fpgenerator = GetMorganGenerator(radius=3, fpSize=2 * fp_size)
-    morgan_np = morgan_fpgenerator.GetCountFingerprintAsNumPy(mol)
+    morgan_np = morgan_fpgenerator.GetFingerprintAsNumPy(mol)
 
     maccs = MACCSkeys.GenMACCSKeys(mol)
     maccs_np = np.array(maccs)
 
     # Atom Pair
-    ap_gen = GetAtomPairGenerator(fpSize=fp_size)
-    atom_pair_np = ap_gen.GetCountFingerprintAsNumPy(mol)
+    # ap_gen = GetAtomPairGenerator(fpSize=fp_size)
+    # atom_pair_np = ap_gen.GetCountFingerprintAsNumPy(mol)
 
     # Layered
     # layered = LayeredFingerprint(mol, fpSize=2 * fp_size)
@@ -86,7 +88,7 @@ def calc_fingerprints(sm):
     # torsion_np = topo_gen.GetCountFingerprintAsNumPy(mol)
 
     combined_fp = np.concatenate([
-        morgan_np, maccs_np, atom_pair_np
+        morgan_np, maccs_np
     ])
 
     return combined_fp
@@ -100,42 +102,44 @@ def smiles2graph(sm):
     return graph
 
 
+def scale_desc(df, is_test=False):
+    cols2log = ['MW', 'SPS', 'NumRotatableBonds', 'NHOHCount', 'TPSA']
+
+    for col in cols2log:
+        if col in df.columns:
+            df[col] = df[col].apply(np.log1p)
+
+    if not is_test:
+        scaler = MinMaxScaler()
+        scaler.fit(df)
+        joblib.dump(scaler, 'scaler_desc.pkl')
+    else:
+        scaler = joblib.load('scaler_desc.pkl')
+    df = scaler.transform(df)
+
+    return df
+
+
+def scale_fp(df, is_test=False):
+    if not is_test:
+        scaler = MinMaxScaler()
+        scaler.fit(df)
+        joblib.dump(scaler, 'scaler_fp.pkl')
+    else:
+        scaler = joblib.load('scaler_fp.pkl')
+    df = scaler.transform(df)
+
+    return df
+
+
 def get_features(df):
     '''Get all features'''
 
-    feature = 'Smiles_cleaned'
-    df_desc = df[feature].apply(smiles_to_descriptors).apply(pd.Series)
-    df_fp = df[feature].apply(calc_fingerprints).apply(pd.Series)
-    df_graph = df[feature].apply(smiles2graph).apply(pd.Series)
+    df_desc = df.apply(smiles_to_descriptors).apply(pd.Series)
+    df_fp = df.apply(calc_fingerprints).apply(pd.Series)
+    df_graph = df.apply(smiles2graph).apply(pd.Series)
 
-    return df_desc, df_fp, df_graph
-
-
-def scale_desc(*data):
-    '''Data must be (train, valid, test)'''
-
-    cols2log = ['MW', 'SPS', 'NumRotatableBonds', 'NHOHCount', 'TPSA']
-
-    for n, df in enumerate(data):
-        for col in cols2log:
-            if col in df.columns:
-                df[col] = df[col].apply(np.log1p)
-
-    scaler = MinMaxScaler()
-    scaler.fit(data[0])
-    data = list(map(scaler.transform, data))
-
-    return data
-
-
-def scale_fp(*data):
-    '''Data must be (train, valid, test)'''
-
-    scaler = MinMaxScaler()
-    scaler.fit(data[0])
-    data = list(map(scaler.transform, data))
-
-    return data
+    return {'desc': df_desc, 'fp': df_fp, 'graph': df_graph}
 
 
 def fix_dim_data_features(data_feature, max_size=6):
@@ -169,38 +173,46 @@ def mapper_graph(graph):
     return data
 
 
-def split_data(train_data, test_data, target='LogP'):
-    '''Split data to train-valid'''
+def split_dict_arrays(data_dict, test_size=0.2, random_state=RANDOM_STATE):
+    n_samples = list(data_dict.values())[0].shape[0]
+    indices = np.arange(n_samples)
 
-    combined_df = {'desc': None, 'fp': None, 'graph': None, 'y': None}
-    y = train_data[target]
-    X = train_data.drop(target, axis=1)
-    X_test = test_data
-    y_test = torch.zeros(len(X_test))
+    train_idx, test_idx = train_test_split(indices, test_size=test_size, random_state=random_state)
 
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=RANDOM_STATE)
-    X_train_desc, X_train_fp, X_train_graph = get_features(X_train)
-    X_val_desc, X_val_fp, X_val_graph = get_features(X_val)
-    X_test_desc, X_test_fp, X_test_graph = get_features(X_test)
-    X_train_desc, X_val_desc, X_test_desc = scale_desc(X_train_desc, X_val_desc, X_test_desc)
-    X_train_fp, X_val_fp, X_test_fp = scale_fp(X_train_fp, X_val_fp, X_test_fp)
+    train_dict = {key: val.iloc[train_idx, :] for key, val in data_dict.items()}
+    test_dict  = {key: val.iloc[test_idx, :]  for key, val in data_dict.items()}
 
-    combined_df['desc'] = [X_train_desc, X_val_desc, X_test_desc]
-    combined_df['fp'] = [X_train_fp, X_val_fp, X_test_fp]
-    combined_df['graph'] = [X_train_graph, X_val_graph, X_test_graph]
-    combined_df['y'] = [y_train, y_val, y_test]
+    # print(train_dict['desc'].shape)
+    # print(test_dict['desc'].shape)
+    return train_dict, test_dict
 
-    combined_df['desc'] = list(map(torch.Tensor, map(np.array, combined_df['desc'])))
-    combined_df['fp'] = list(map(torch.Tensor, map(np.array, combined_df['fp'])))
-    combined_df['graph'] = list(map(lambda x: list(map(lambda y: mapper_graph(y[0]), x.values)), combined_df['graph']))
-    combined_df['y'] = list(map(lambda x: torch.Tensor(x).unsqueeze(-1), map(np.array, combined_df['y'])))
+
+def get_data(df, target='LogP', is_test=False):
+    '''Prepare data for training or inference of the model'''
+
+    combined_df = {'train': None, 'val': None, 'test': None}
+    y = df[[target]] if not is_test else torch.zeros(len(df))
+
+    featured_df = get_features(df['Smiles_cleaned'])
+    featured_df['y'] = y
+    if not is_test:
+        train_df, valid_df = split_dict_arrays(featured_df)
+        train_df['desc'] = scale_desc(train_df['desc'])
+        train_df['fp'] = scale_fp(train_df['fp'])
+        valid_df['desc'] = scale_desc(valid_df['desc'], is_test=True)
+        valid_df['fp'] = scale_fp(valid_df['fp'], is_test=True)
+        combined_df['train'], combined_df['val'] = train_df, valid_df
+    else:
+        test_df = featured_df
+        test_df['desc'] = scale_desc(test_df['desc'], is_test=True)
+        test_df['fp'] = scale_fp(test_df['fp'], is_test=True)
+        combined_df['test'] = test_df
+
+    for name, data in combined_df.items():
+        if data is not None:
+            data['desc'] = torch.Tensor(data['desc'])
+            data['fp'] = torch.Tensor(data['fp'])
+            data['graph'] = list(map(lambda x: mapper_graph(x[0]), data['graph'].to_numpy()))
+            data['y'] = torch.Tensor(data['y'].to_numpy())
 
     return combined_df
-
-
-
-
-
-
-
-

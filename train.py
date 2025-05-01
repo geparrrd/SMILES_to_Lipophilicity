@@ -5,32 +5,32 @@ from deepchem.models.torch_models.dmpnn import DMPNN
 import pytorch_lightning as pyl
 from preprocessing_data import get_data
 import pandas as pd
+from loaders.make_loaders import get_loaders
 
 import warnings
 warnings.filterwarnings("ignore")
 
-BATCH_SIZE = 16
-EPOCHS = 50
+EPOCHS = 20
 
 
-def main():
+def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    df_file = 'df_mean_logP.csv'
+    df_file = 'data/df_mean_logP.csv'
     data = pd.read_csv(df_file)
-    comb_df = get_data(data, is_test)
-    fingerprint_size = dfs['fp'][0].shape[1]
-    numeric_features_size = dfs['desc'][0].shape[1]
+    comb_df = get_data(data)
+    fingerprint_size = comb_df['train']['fp'].shape[1]
+    numeric_features_size = comb_df['train']['desc'].shape[1]
 
-    train_loader, valid_loader, test_loader = get_loaders(dfs)
+    train_loader, valid_loader = get_loaders(comb_df, batch_size=128)
     model = HybridDMPNN(fingerprint_size=fingerprint_size,
                         numeric_features_size=numeric_features_size,
-                        dmpnn_model=DMPNN(n_tasks=300, ffn_layers=2),
-                        hidden_size=4096,
+                        dmpnn_model=DMPNN(n_tasks=300, depth=3, enc_hidden=900, ffn_hidden=900, ffn_layers=3, ffn_dropout_p=0.2),
+                        hidden_size=2048,
                         num_hidden_size=512,
                         comb_hidden_size=256).to(device)
 
-    logger = TensorBoardLogger("lightning_logs", name="model_test_2")
+    logger = TensorBoardLogger("lightning_logs", name="model_test_3")
     trainer = pyl.Trainer(max_epochs=EPOCHS, logger=logger)
     trainer.fit(model, train_loader, valid_loader)
 
@@ -40,4 +40,4 @@ def main():
 if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()
-    main()
+    train()

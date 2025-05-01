@@ -1,0 +1,11 @@
+Unnamed: 0,SMILES,Smiles_cleaned,LogP
+2789,C(CCC)N(CCCC)C(=O)COC1=CC=CC=C1,CCCCN(CCCC)C(=O)COc1ccccc1,5.144
+4925,O=S(=O)(C=1C([N+]([O-])=O)=CC=CC=1)CC(OC)=O,COC(=O)CS(=O)(=O)c1ccccc1[N+](=O)[O-],2.032
+9412,C=1([N+]([O-])=O)N=C(Br)NC=1Br,O=[N+]([O-])c1[nH]c(Br)nc1Br,4.228
+8921,FC(F)(F)c1cccc(Nc2cc(Cl)ccc2C(O)=O)c1,O=C(O)c1ccc(Cl)cc1Nc1cccc(C(F)(F)F)c1,2.29
+10136,C=1(C(=NO[N+]=1[O-])Cl)C2=CC=CC=C2,[O-][n+]1onc(Cl)c1-c1ccccc1,4.239
+8892,C(C=1C(C(=O)O)=C(C(=O)O)C(C(=O)O)=C(C(=O)O)C=1C(=O)O)(=O)O,O=C(O)c1c(C(=O)O)c(C(=O)O)c(C(=O)O)c(C(=O)O)c1C(=O)O,2.869
+921,CC1(C)N(C(N)=NC(N)=N1)C=2C=CC(=CC=2)C(C)=O,CC(=O)c1ccc(N2C(N)=NC(N)=NC2(C)C)cc1,1.229
+4510,C1CN(CCN1CC2=CC=CC(COC=3C=CC=CC=3)=C2)C,CN1CCN(Cc2cccc(COc3ccccc3)c2)CC1,4.09
+1451,CC(C)OC(CSC1=CC=C(Cl)C=C1[N+](=O)[O-])=O,CC(C)OC(=O)CSc1ccc(Cl)cc1[N+](=O)[O-],4.715
+296,C1=C(OC(C=C2C(N(C(=O)S2)CC=C)=O)=C1)[N+]([O-])=O,C=CCN1C(=O)SC(=Cc2ccc([N+](=O)[O-])o2)C1=O,3.592

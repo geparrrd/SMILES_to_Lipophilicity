@@ -27,7 +27,7 @@ def train():
     train_loader, valid_loader = get_loaders(comb_df, batch_size=128)
     model = HybridDMPNN(fingerprint_size=fingerprint_size,
                         numeric_features_size=numeric_features_size,
-                        dmpnn_model=DMPNN(n_tasks=300, depth=3, enc_hidden=900, ffn_hidden=900, ffn_layers=3, ffn_dropout_p=0.2),
+                        dmpnn_model=DMPNN(n_tasks=300, ffn_layers=2),
                         hidden_size=2048,
                         num_hidden_size=512,
                         comb_hidden_size=256).to(device)

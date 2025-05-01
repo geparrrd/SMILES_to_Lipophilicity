@@ -195,11 +195,10 @@ def get_data(df, target='LogP', is_test=False):
     '''Prepare data for training or inference of the model'''
 
     combined_df = {'train': None, 'val': None, 'test': None}
-    y = df[[target]] if not is_test else torch.zeros(len(df))
 
     featured_df = get_features(df['Smiles_cleaned'])
-    featured_df['y'] = y
     if not is_test:
+        featured_df['y'] = df[[target]]
         train_df, valid_df = split_dict_arrays(featured_df)
         train_df['desc'] = scale_desc(train_df['desc'])
         train_df['fp'] = scale_fp(train_df['fp'])
@@ -207,6 +206,7 @@ def get_data(df, target='LogP', is_test=False):
         valid_df['fp'] = scale_fp(valid_df['fp'], is_test=True)
         combined_df['train'], combined_df['val'] = train_df, valid_df
     else:
+        featured_df['y'] = pd.DataFrame({'y': [0] * len(df)})
         test_df = featured_df
         test_df['desc'] = scale_desc(test_df['desc'], is_test=True)
         test_df['fp'] = scale_fp(test_df['fp'], is_test=True)

@@ -23,7 +23,7 @@ def predict():
 
         y_pred_test = trained_model.test_predictions
 
-        submission = pd.read_csv('data/final_sample_submission80.csv')
+        submission = pd.read_csv('data/sample/sample_submission.csv')
         submission['LogP'] = list(map(lambda x: x[0], y_pred_test))
 
         filename = 'submission.csv'
